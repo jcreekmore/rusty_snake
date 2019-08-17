@@ -1,0 +1,4 @@
+.*.sw*
+.venv
+target/
+.python-version
