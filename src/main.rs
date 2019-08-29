@@ -1,7 +1,7 @@
 use dirs::home_dir;
 use reqwest;
 use reqwest::header::{self, HeaderName, HeaderValue};
-use serde_json::Value;
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::env::var_os;
 use std::fs::File;
@@ -10,12 +10,45 @@ use structopt::StructOpt;
 
 const CACHE: &str = ".mr.cache";
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Group {
+    id: usize,
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Author {
+    username: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Project {
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct MergeRequests {
+    project_id: usize,
+    title: String,
+    web_url: String,
+    author: Author,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ExpandedMergeRequests {
+    project_name: String,
+    group_name: String,
+    title: String,
+    web_url: String,
+    author: Author,
+}
+
 fn inc(session: reqwest::Client) {
     let gitlab = var_os("GITLAB_URL")
         .map(|val| val.to_string_lossy().into_owned())
         .unwrap_or_else(|| "https://gitlab.com".into());
 
-    let groups: Vec<Value> = session
+    let groups: Vec<Group> = session
         .get(&format!("{}/api/v4/groups", gitlab))
         .send()
         .unwrap()
@@ -25,12 +58,10 @@ fn inc(session: reqwest::Client) {
     let mut merge_requests = vec![];
 
     for group in groups {
-        let group_id = group.get("id").unwrap().as_u64().unwrap();
-
-        let grp_merge_requests: Vec<Value> = session
+        let grp_merge_requests: Vec<MergeRequests> = session
             .get(&format!(
                 "{}/api/v4/groups/{}/merge_requests",
-                gitlab, group_id
+                gitlab, group.id
             ))
             .query(&[("state", "opened")])
             .send()
@@ -43,29 +74,29 @@ fn inc(session: reqwest::Client) {
         }
     }
 
-    let mut cache: Vec<Value> = vec![];
-    let mut project_names: HashMap<u64, String> = HashMap::new();
+    let mut cache: Vec<ExpandedMergeRequests> = vec![];
+    let mut project_names: HashMap<usize, String> = HashMap::new();
 
-    for (group, mut mr) in merge_requests {
-        let proj_id = mr.get("project_id").unwrap().as_u64().unwrap();
-        let group_name = group.get("name").unwrap().as_str().unwrap();
-        if !project_names.contains_key(&proj_id) {
-            let project: Value = session
-                .get(&format!("{}/api/v4/projects/{}", gitlab, proj_id))
+    for (group, mr) in merge_requests {
+        if !project_names.contains_key(&mr.project_id) {
+            let project: Project = session
+                .get(&format!("{}/api/v4/projects/{}", gitlab, mr.project_id))
                 .send()
                 .unwrap()
                 .json()
                 .unwrap();
-            let name = project.get("name").unwrap().as_str().unwrap().to_string();
-            project_names.insert(proj_id, name);
+            project_names.insert(mr.project_id, project.name);
         }
-        let obj = mr.as_object_mut().unwrap();
-        obj.insert(
-            "project_name".into(),
-            Value::String(project_names[&proj_id].clone()),
-        );
-        obj.insert("group_name".into(), Value::String(group_name.to_string()));
-        cache.push(mr);
+
+        let obj = ExpandedMergeRequests {
+            project_name: project_names[&mr.project_id].clone(),
+            group_name: group.name,
+            title: mr.title,
+            web_url: mr.web_url,
+            author: mr.author,
+        };
+
+        cache.push(obj);
     }
 
     let cachefilename = home_dir().unwrap().join(CACHE);
@@ -76,38 +107,23 @@ fn inc(session: reqwest::Client) {
 fn show(idx: Option<usize>) {
     let cachefilename = home_dir().unwrap().join(CACHE);
     let fp = File::open(cachefilename).unwrap();
-    let merge_requests: Vec<Value> = serde_json::from_reader(fp).unwrap();
+    let merge_requests: Vec<ExpandedMergeRequests> = serde_json::from_reader(fp).unwrap();
 
     match idx {
         None => {
             for (idx, mr) in merge_requests.iter().enumerate() {
-                let group_name = mr.get("group_name").unwrap().as_str().unwrap();
-                let project_name = mr.get("project_name").unwrap().as_str().unwrap();
-                let title = mr.get("title").unwrap().as_str().unwrap();
-                println!("{:3}: [{}/{}] {}", idx, group_name, project_name, title)
+                println!("{:3}: [{}/{}] {}",
+                         idx, mr.group_name, mr.project_name, mr.title)
             }
         }
         Some(idx) => {
             if let Some(mr) = merge_requests.get(idx) {
-                let username = mr
-                    .get("author")
-                    .unwrap()
-                    .as_object()
-                    .unwrap()
-                    .get("username")
-                    .unwrap()
-                    .as_str()
-                    .unwrap();
-                let url = mr.get("web_url").unwrap().as_str().unwrap();
-
-                let group_name = mr.get("group_name").unwrap().as_str().unwrap();
-                let project_name = mr.get("project_name").unwrap().as_str().unwrap();
-                let title = mr.get("title").unwrap().as_str().unwrap();
                 println!(
                     "[{}/{}] {} - @{}",
-                    group_name, project_name, title, username
+                    mr.group_name, mr.project_name, mr.title,
+                    mr.author.username
                 );
-                println!("     {}", url);
+                println!("     {}", mr.web_url);
             } else {
                 eprintln!(
                     "Invalid merge request: {} is larger than {}",
