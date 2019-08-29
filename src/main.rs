@@ -1,4 +1,3 @@
-use clap::{App, Arg, SubCommand};
 use dirs::home_dir;
 use reqwest;
 use reqwest::header::{self, HeaderName, HeaderValue};
@@ -7,6 +6,7 @@ use std::collections::HashMap;
 use std::env::var_os;
 use std::fs::File;
 use std::process::exit;
+use structopt::StructOpt;
 
 const CACHE: &str = ".mr.cache";
 
@@ -119,6 +119,22 @@ fn show(idx: Option<usize>) {
     }
 }
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "Merge Requests")]
+#[structopt(raw(setting = "structopt::clap::AppSettings::ColoredHelp"))]
+#[structopt(raw(setting = "structopt::clap::AppSettings::SubcommandRequiredElseHelp"))]
+enum Config {
+    /// incorporate merge requests
+    #[structopt(name = "inc")]
+    Inc,
+    /// show incorporated merge requests
+    #[structopt(name = "show")]
+    Show {
+        /// which merge request index
+        idx: Option<usize>,
+    }
+}
+
 fn main() {
     let private_token = match var_os("GITLAB_PRIVATE_TOKEN") {
         Some(token) => token.to_string_lossy().into_owned(),
@@ -138,21 +154,10 @@ fn main() {
         .build()
         .unwrap();
 
-    let mut app = App::new("Merge Requests")
-        .subcommand(SubCommand::with_name("inc"))
-        .subcommand(SubCommand::with_name("show").arg(Arg::with_name("idx")));
-    let matches = app.clone().get_matches();
+    let config = Config::from_args();
 
-    if matches.subcommand_matches("inc").is_some() {
-        inc(session);
-    } else if let Some(matches) = matches.subcommand_matches("show") {
-        show(
-            matches
-                .value_of("idx")
-                .map(|idx| idx.parse::<usize>().unwrap()),
-        )
-    } else {
-        app.print_help().unwrap();
-        exit(1);
-    }
+    match config {
+        Config::Inc => inc(session),
+        Config::Show { idx } => show(idx),
+    };
 }
