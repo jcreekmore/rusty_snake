@@ -1,3 +1,5 @@
+use common_failures::prelude::*;
+use common_failures::quick_main;
 use dirs::home_dir;
 use reqwest;
 use reqwest::header::{self, HeaderName, HeaderValue};
@@ -43,17 +45,15 @@ struct ExpandedMergeRequests {
     author: Author,
 }
 
-fn inc(session: reqwest::Client) {
+fn inc(session: reqwest::Client) -> Result<()> {
     let gitlab = var_os("GITLAB_URL")
         .map(|val| val.to_string_lossy().into_owned())
         .unwrap_or_else(|| "https://gitlab.com".into());
 
     let groups: Vec<Group> = session
         .get(&format!("{}/api/v4/groups", gitlab))
-        .send()
-        .unwrap()
-        .json()
-        .unwrap();
+        .send()?
+        .json()?;
 
     let mut merge_requests = vec![];
 
@@ -64,10 +64,8 @@ fn inc(session: reqwest::Client) {
                 gitlab, group.id
             ))
             .query(&[("state", "opened")])
-            .send()
-            .unwrap()
-            .json()
-            .unwrap();
+            .send()?
+            .json()?;
 
         for mr in grp_merge_requests {
             merge_requests.push((group.clone(), mr));
@@ -81,10 +79,8 @@ fn inc(session: reqwest::Client) {
         if !project_names.contains_key(&mr.project_id) {
             let project: Project = session
                 .get(&format!("{}/api/v4/projects/{}", gitlab, mr.project_id))
-                .send()
-                .unwrap()
-                .json()
-                .unwrap();
+                .send()?
+                .json()?;
             project_names.insert(mr.project_id, project.name);
         }
 
@@ -100,14 +96,16 @@ fn inc(session: reqwest::Client) {
     }
 
     let cachefilename = home_dir().unwrap().join(CACHE);
-    let fp = File::create(cachefilename).unwrap();
-    serde_json::to_writer_pretty(fp, &cache).unwrap();
+    let fp = File::create(&cachefilename).io_write_context(&cachefilename)?;
+    serde_json::to_writer_pretty(fp, &cache)?;
+
+    Ok(())
 }
 
-fn show(idx: Option<usize>) {
+fn show(idx: Option<usize>) -> Result<()> {
     let cachefilename = home_dir().unwrap().join(CACHE);
-    let fp = File::open(cachefilename).unwrap();
-    let merge_requests: Vec<ExpandedMergeRequests> = serde_json::from_reader(fp).unwrap();
+    let fp = File::open(&cachefilename).io_read_context(&cachefilename)?;
+    let merge_requests: Vec<ExpandedMergeRequests> = serde_json::from_reader(fp)?;
 
     match idx {
         None => {
@@ -133,6 +131,8 @@ fn show(idx: Option<usize>) {
             }
         }
     }
+
+    Ok(())
 }
 
 #[derive(Debug, StructOpt)]
@@ -151,7 +151,7 @@ enum Config {
     }
 }
 
-fn main() {
+fn run() -> Result<()> {
     let private_token = match var_os("GITLAB_PRIVATE_TOKEN") {
         Some(token) => token.to_string_lossy().into_owned(),
         None => {
@@ -163,17 +163,18 @@ fn main() {
     let mut headers = header::HeaderMap::new();
     headers.insert(
         HeaderName::from_static("private-token"),
-        HeaderValue::from_str(&private_token).unwrap(),
+        HeaderValue::from_str(&private_token)?,
     );
     let session = reqwest::Client::builder()
         .default_headers(headers)
-        .build()
-        .unwrap();
+        .build()?;
 
     let config = Config::from_args();
 
     match config {
         Config::Inc => inc(session),
         Config::Show { idx } => show(idx),
-    };
+    }
 }
+
+quick_main!(run);
